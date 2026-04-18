@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <title>ImageOptimizer – Client-Side Compressor</title>
   <meta name="description" content="Compress and resize images (PNG, JPEG, WebP) right in your browser. View original vs. compressed dimensions & sizes and download optimized files.">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
     :root {
       --bg: #f5f5f5; --card: #fff; --text: #333;
@@ -77,6 +78,27 @@
       display:inline-block; margin-top:.5rem;
       color: var(--primary); text-decoration:underline;
     }
+    .rename-controls {
+      display:flex; flex-wrap:wrap; gap:.5rem;
+      margin:1rem 0; padding:1rem;
+      background: var(--card); border-radius:6px;
+      border:1px solid var(--border);
+    }
+    .rename-controls label {
+      display:flex; flex-direction:column; font-size:.9rem;
+      flex:1; min-width:140px;
+    }
+    .rename-controls input {
+      margin-top:.2rem; padding:.5rem; border:1px solid var(--border);
+      border-radius:4px; font-size:.9rem;
+      background: var(--card); color: var(--text);
+    }
+    #downloadAllBtn {
+      background: var(--primary);
+    }
+    #downloadAllBtn:hover {
+      background: #0052a3;
+    }
   </style>
 </head>
 <body data-theme="light">
@@ -110,9 +132,29 @@
 
       <button id="compressBtn">Compress All</button>
       <button id="clearBtn">Clear All</button>
+      <button id="downloadAllBtn">Download All as ZIP</button>
       <button id="themeBtn">🌙 Dark Mode</button>
 
       <input type="file" id="fileInput" accept="image/*" multiple hidden/>
+    </div>
+
+    <div class="rename-controls" id="renameControls">
+      <label>
+        File Prefix
+        <input type="text" id="filePrefix" placeholder="e.g. compressed_"/>
+      </label>
+      <label>
+        File Suffix
+        <input type="text" id="fileSuffix" placeholder="e.g. _optimized"/>
+      </label>
+      <label>
+        Custom Template
+        <input type="text" id="nameTemplate" placeholder="{prefix}{name}{suffix}{ext}"/>
+      </label>
+      <label>
+        <span style="margin-bottom:.2rem;display:block;">Preview</span>
+        <span id="namePreview" style="font-family:monospace;background:var(--bg);padding:.3rem .5rem;border-radius:4px;">image.jpg</span>
+      </label>
     </div>
 
     <div id="gallery"></div>
@@ -124,19 +166,99 @@
 
   <script>
   document.addEventListener('DOMContentLoaded', () => {
-    const dropZone    = document.getElementById('dropZone');
-    const fileInput   = document.getElementById('fileInput');
-    const gallery     = document.getElementById('gallery');
-    const formatSel   = document.getElementById('formatSelect');
-    const qualityRng  = document.getElementById('qualityRange');
-    const qualityVal  = document.getElementById('qualityValue');
-    const maxWidthIn  = document.getElementById('maxWidth');
-    const compressBtn = document.getElementById('compressBtn');
-    const clearBtn    = document.getElementById('clearBtn');
-    const themeBtn    = document.getElementById('themeBtn');
-    const body        = document.body;
+    const dropZone       = document.getElementById('dropZone');
+    const fileInput      = document.getElementById('fileInput');
+    const gallery        = document.getElementById('gallery');
+    const formatSel      = document.getElementById('formatSelect');
+    const qualityRng     = document.getElementById('qualityRange');
+    const qualityVal     = document.getElementById('qualityValue');
+    const maxWidthIn     = document.getElementById('maxWidth');
+    const compressBtn    = document.getElementById('compressBtn');
+    const clearBtn       = document.getElementById('clearBtn');
+    const downloadAllBtn = document.getElementById('downloadAllBtn');
+    const themeBtn       = document.getElementById('themeBtn');
+    const body           = document.body;
+    const filePrefixIn   = document.getElementById('filePrefix');
+    const fileSuffixIn   = document.getElementById('fileSuffix');
+    const nameTemplateIn = document.getElementById('nameTemplate');
+    const namePreview    = document.getElementById('namePreview');
 
     let images = [];
+    let imageCounter = 0;
+
+    // Generate filename based on prefix, suffix, and template
+    function generateFileName(originalName, ext, index = 0) {
+      const prefix = filePrefixIn.value || '';
+      const suffix = fileSuffixIn.value || '';
+      const template = nameTemplateIn.value || '{prefix}{name}{suffix}{ext}';
+      
+      const baseName = originalName.replace(/\.[^/.]+$/, '');
+      const dotExt = ext ? (ext.startsWith('.') ? ext : '.' + ext) : '';
+      
+      let result = template
+        .replace(/{prefix}/g, prefix)
+        .replace(/{suffix}/g, suffix)
+        .replace(/{name}/g, baseName)
+        .replace(/{ext}/g, dotExt)
+        .replace(/{index}/g, index + 1)
+        .replace(/{index0}/g, String(index).padStart(3, '0'));
+      
+      if (!result.includes(dotExt) && dotExt) {
+        result = result + dotExt;
+      }
+      
+      return result;
+    }
+
+    // Update filename preview
+    function updateNamePreview() {
+      const previewName = generateFileName('example-image.jpg', '.jpg', 0);
+      namePreview.textContent = previewName;
+      
+      for (let i = 0; i < images.length; i++) {
+        const obj = images[i];
+        if (obj.blob && obj.ext) {
+          const dl = obj.info.querySelector('a.download');
+          if (dl) {
+            const newName = generateFileName(obj.file.name, obj.ext, i);
+            dl.download = newName;
+            obj.downloadName = newName;
+          }
+        }
+      }
+    }
+
+    // Download all compressed images as ZIP
+    async function downloadAllAsZip() {
+      const compressedImages = images.filter(obj => obj.blob && obj.ext);
+      
+      if (compressedImages.length === 0) {
+        alert('No compressed images to download. Please compress images first.');
+        return;
+      }
+
+      const zip = new JSZip();
+      
+      for (let i = 0; i < compressedImages.length; i++) {
+        const obj = compressedImages[i];
+        const fileName = generateFileName(obj.file.name, obj.ext, i);
+        zip.file(fileName, obj.blob);
+      }
+
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const zipUrl = URL.createObjectURL(zipBlob);
+      
+      const zipName = 'optimized_images_' + new Date().toISOString().slice(0, 10) + '.zip';
+      
+      const link = document.createElement('a');
+      link.href = zipUrl;
+      link.download = zipName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      setTimeout(() => URL.revokeObjectURL(zipUrl), 1000);
+    }
 
     // Toggle theme
     themeBtn.addEventListener('click', () => {
@@ -149,6 +271,14 @@
     qualityRng.addEventListener('input', () => {
       qualityVal.textContent = qualityRng.value;
     });
+
+    // Rename control listeners
+    [filePrefixIn, fileSuffixIn, nameTemplateIn].forEach(input => {
+      input.addEventListener('input', updateNamePreview);
+    });
+
+    // Download all as ZIP
+    downloadAllBtn.addEventListener('click', downloadAllAsZip);
 
     // Open file picker
     dropZone.addEventListener('click', () => fileInput.click());
@@ -262,6 +392,15 @@
               obj.compHeight = h;
               obj.compSize   = blob.size;
 
+              let ext = format.split('/')[1];
+              if (ext === 'jpeg') ext = 'jpg';
+              obj.ext = ext;
+
+              const imageIndex = images.indexOf(obj);
+
+              const fileName = generateFileName(obj.file.name, ext, imageIndex);
+              obj.downloadName = fileName;
+
               // update preview
               const url = URL.createObjectURL(blob);
               obj.imgEl.src = url;
@@ -279,11 +418,8 @@
                 dl.textContent = 'Download';
                 obj.info.appendChild(dl);
               }
-              let ext = format.split('/')[1];
-              if (ext === 'jpeg') ext = 'jpg';
-              const base = obj.file.name.replace(/\.[^/.]+$/, '');
               dl.href = url;
-              dl.download = `optimized-${base}.${ext}`;
+              dl.download = fileName;
 
               resolve();
             }, format, quality);
